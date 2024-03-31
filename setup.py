@@ -3,7 +3,7 @@ from pathlib import Path
 
 setup(
 	name='lostproxy',
-	version='0.1.2',
+	version='0.1.3',
 	author='Joseph',
 	author_email='josephdove@proton.me',
 	description='A multifunctional python proxy',

@@ -127,10 +127,20 @@ class HTTPConnection():
 			self.host_address = host_address_split[0].decode("utf-8")
 			self.requested_port = int(host_address_split[1])
 
+			# Resolve domain
+			self.ip_address = socket.gethostbyname(self.host_address)
+			self.ip_bytes = socket.inet_aton(self.ip_address)
+
+			# Do not allow localhost connections unless specified
+			if not server_config.allow_localhost and is_ip_local(self.ip_address):
+				client_socket.send(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+				client_socket.close()
+				return
+
 			# Create socket to server
 			try:
 				server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-				server_socket.connect((self.host_address, self.requested_port))
+				server_socket.connect((self.ip_address, self.requested_port))
 			except:
 				# Connection failed
 				client_socket.send(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
@@ -170,6 +180,16 @@ class HTTPConnection():
 				for header in self.headers:
 					if header.lower() == bad_header:
 						del self.filtered_headers[header]
+
+			# Resolve domain
+			self.ip_address = socket.gethostbyname(self.host_address)
+			self.ip_bytes = socket.inet_aton(self.ip_address)
+
+			# Do not allow localhost connections unless specified
+			if not server_config.allow_localhost and is_ip_local(self.ip_address):
+				client_socket.send(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+				client_socket.close()
+				return
 
 			# Create socket to server
 			try:
@@ -318,6 +338,11 @@ class Socks5Connection():
 			self.requested_port = self.address_packet[-2] * 256 + self.address_packet[-1]
 		else:
 			# Address type is not support (IPV6, etc), close connection
+			client_socket.close()
+			return
+
+		# Do not allow localhost connections unless specified
+		if not server_config.allow_localhost and is_ip_local(self.ip_address):
 			client_socket.close()
 			return
 
