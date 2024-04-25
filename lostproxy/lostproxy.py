@@ -12,6 +12,7 @@ parser.add_argument("-l", "--listener", help = "Listening address, example: 0.0.
 parser.add_argument("-u", "--user", help = "(OPTIONAL) Username for auth, example: Jack")
 parser.add_argument("-p", "--password", help = "(OPTIONAL) Password for auth, example: Password123")
 parser.add_argument("-a", "--allow_localhost", help="(OPTIONAL) Allows localhost and other internal IP ranges.", action="store_true")
+parser.add_argument("-v", "--verbose", help="(OPTIONAL) Displays information about connections and what site they visit.", action="store_true")
 
 args = parser.parse_args()
 
@@ -64,7 +65,7 @@ def is_ip_local(ip_address):
 	return False
 
 class HTTPConnection():
-	def __init__(self, server_config, init_packet, client_socket):
+	def __init__(self, server_config, init_packet, client_socket, client_address):
 		# Parse the initial packet
 
 		split_packet = init_packet.split(b"\r\n\r\n")
@@ -101,12 +102,18 @@ class HTTPConnection():
 
 		# Handle authentication
 		if server_config.should_authenticate:
+			self.has_authenticated = False
 			for header in self.headers:
 				if header.lower() == b"proxy-authorization":
 					# Only support BASIC authentication
 					if not self.headers[header].startswith(b"Basic "):
 						client_socket.send(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
 						client_socket.close()
+
+						# Log authentication failure
+						if server_config.is_verbose:
+							print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+"'s request failed due to a disallowed authentication method.")
+
 						return
 
 					# Decode the authentication token and compare it to username and password
@@ -117,7 +124,24 @@ class HTTPConnection():
 					if (self.username, self.password) != server_config.authentication_parameters:
 						client_socket.send(b"HTTP/1.1 401 Unauthorized\r\n\r\n")
 						client_socket.close()
+
+						# Log authentication failure
+						if server_config.is_verbose:
+							print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+'\'s request failed due to wrong authentication (passed in "'+self.username+":"+self.password+'").')
+
 						return
+					else:
+						self.has_authenticated = True
+
+			if not self.has_authenticated:
+				client_socket.send(b"HTTP/1.1 401 Unauthorized\r\n\r\n")
+				client_socket.close()
+
+				# Log authentication failure
+				if server_config.is_verbose:
+					print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+"'s request failed due to wrong authentication (no authentication header passed in).")
+
+				return
 
 		if self.method == b"CONNECT":
 			# Handle HTTPS/TCPIP requests
@@ -127,6 +151,10 @@ class HTTPConnection():
 			self.host_address = host_address_split[0].decode("utf-8")
 			self.requested_port = int(host_address_split[1])
 
+			# Log connection request
+			if server_config.is_verbose:
+				print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+" requested connection to "+self.host_address+":"+str(self.requested_port))
+
 			# Resolve domain
 			self.ip_address = socket.gethostbyname(self.host_address)
 			self.ip_bytes = socket.inet_aton(self.ip_address)
@@ -135,6 +163,11 @@ class HTTPConnection():
 			if not server_config.allow_localhost and is_ip_local(self.ip_address):
 				client_socket.send(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
 				client_socket.close()
+
+				# Log connection failure
+				if server_config.is_verbose:
+					print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.url+" failed due to local domain disallowance.")
+
 				return
 
 			# Create socket to server
@@ -145,15 +178,28 @@ class HTTPConnection():
 				# Connection failed
 				client_socket.send(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
 				client_socket.close()
+
+				# Log connection failure due to localhost check
+				if server_config.is_verbose:
+					print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.url+" failed due to local domain disallowance.")
+
 				return
 
 			# Send a successful response
 			client_socket.send(b"HTTP/1.1 200 Connection established\r\nConnection: keep-alive\r\n\r\n")
 
+			# Log connection acceptance
+			if server_config.is_verbose:
+				print("[HTTP] Accepted "+client_address[0]+":"+str(client_address[1])+"'s connection request to "+self.host_address+":"+str(self.requested_port))
+
 			# Relay the connection
 			relay_connection(client_socket, server_socket)
 		else:
 			# Handle HTTP requests
+
+			host_address_split = self.host_address.split(b":")
+
+			self.host_address = host_address_split[0].decode("utf-8")
 
 			# Get the protocol, if there isn't any, default to HTTP
 			url_position = self.url.find(b"://")
@@ -181,6 +227,10 @@ class HTTPConnection():
 					if header.lower() == bad_header:
 						del self.filtered_headers[header]
 
+			# Log connection request
+			if server_config.is_verbose:
+				print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+" requested "+self.url.decode("utf-8"))
+
 			# Resolve domain
 			self.ip_address = socket.gethostbyname(self.host_address)
 			self.ip_bytes = socket.inet_aton(self.ip_address)
@@ -189,6 +239,11 @@ class HTTPConnection():
 			if not server_config.allow_localhost and is_ip_local(self.ip_address):
 				client_socket.send(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
 				client_socket.close()
+
+				# Log connection failure due to localhost check
+				if server_config.is_verbose:
+					print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.url.decode("utf-8")+" failed due to local domain disallowance.")
+
 				return
 
 			# Create socket to server
@@ -199,7 +254,16 @@ class HTTPConnection():
 				# Connection failed
 				client_socket.send(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
 				client_socket.close()
+
+				# Log connection failure
+				if server_config.is_verbose:
+					print("[HTTP] Client "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.url.decode("utf-8")+" failed due to connection rejection from server.")
+
 				return
+
+			# Log connection acceptance
+			if server_config.is_verbose:
+				print("[HTTP] Accepted "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.url.decode("utf-8"))
 
 			# Send method, url location and version
 			server_socket.send(b" ".join([self.method, self.url_location, self.http_version]) + b"\r\n")
@@ -216,7 +280,7 @@ class HTTPConnection():
 
 
 class Socks4Connection():
-	def __init__(self, server_config, init_packet, client_socket):
+	def __init__(self, server_config, init_packet, client_socket, client_address):
 		# Parse the initial packet
 
 		self.version = init_packet[0]
@@ -238,12 +302,20 @@ class Socks4Connection():
 
 		# Handle authentication
 		if server_config.should_authenticate and self.user_id.split("***") != list(server_config.authentication_parameters):
+			# Log authentication failure
+			if server_config.is_verbose:
+				print("[SOCKS4] Client "+client_address[0]+":"+str(client_address[1])+'\'s request failed due to wrong authentication (passed in "'+self.user_id+'").')
+
 			client_socket.send(b"\x00\x5D")
 			client_socket.close()
 			return
 
 		# Handle local IP blocking
 		if not server_config.allow_localhost and is_ip_local(self.ip_address):
+			# Log connection failure due to localhost check
+			if server_config.is_verbose:
+				print("[SOCKS4] Client "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.ip_address+":"+str(self.requested_port)+" failed due to local domain disallowance.")
+			
 			client_socket.send(b"\x00\x5B")
 			client_socket.close()
 			return
@@ -256,15 +328,24 @@ class Socks4Connection():
 			# Connection failed
 			client_socket.send(b"\x00\x5B")
 			client_socket.close()
+
+			# Log connection failure
+			if server_config.is_verbose:
+				print("[SOCKS4] Client "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.ip_address+":"+str(self.requested_port)+" failed due to connection rejection from server.")
+
 			return
 
 		# Send success response and start relaying the connection
 		client_socket.send(b"\x00\x5A" + self.requested_port_bytes + self.ip_bytes)
 
+		# Log connection acceptance
+		if server_config.is_verbose:
+			print("[SOCKS4] Accepted "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.__dict__.get("domain_name", self.ip_address)+":"+str(self.requested_port))
+
 		relay_connection(client_socket, server_socket)
 
 class Socks5Connection():
-	def __init__(self, server_config, init_packet, client_socket):
+	def __init__(self, server_config, init_packet, client_socket, client_address):
 		# Parse the initial packet
 
 		self.version = init_packet[0]
@@ -277,6 +358,11 @@ class Socks5Connection():
 			if 0x02 not in self.authentication_methods:
 				client_socket.sendall(b'\x05\xff')
 				client_socket.close()
+
+				# Log authentication failure
+				if server_config.is_verbose:
+					print("[SOCKS5] Client "+client_address[0]+":"+str(client_address[1])+'\'s request failed due to no authentication methods.')
+
 				return
 
 			# Continue with authentication
@@ -299,6 +385,11 @@ class Socks5Connection():
 				# Authentication failed
 				client_socket.sendall(b'\x01\x01')  # 0x01 version of the subnegotiation, 0x01 authentication failure
 				client_socket.close()
+
+				# Log authentication failure
+				if server_config.is_verbose:
+					print("[SOCKS5] Client "+client_address[0]+":"+str(client_address[1])+'\'s request failed due to wrong authentication (passed in "'+self.username+":"+self.password+'").')
+
 				return
 
 			# Authentication successful
@@ -329,7 +420,7 @@ class Socks5Connection():
 		elif self.address_type == 3:
 			# Address is a domain name, get it
 			domain_size = self.address_packet[4]
-			self.domain_name = self.address_packet[5:5+domain_size]
+			self.domain_name = self.address_packet[5:5+domain_size].decode("utf-8")
 
 			# And finally, resolve it
 			self.ip_address = socket.gethostbyname(self.domain_name)
@@ -338,11 +429,20 @@ class Socks5Connection():
 			self.requested_port = self.address_packet[-2] * 256 + self.address_packet[-1]
 		else:
 			# Address type is not support (IPV6, etc), close connection
+
+			# Log protocol failure
+			if server_config.is_verbose:
+				print("[SOCKS5] Client "+client_address[0]+":"+str(client_address[1])+'\'s request failed due to request not being supported.')
+
 			client_socket.close()
 			return
 
 		# Do not allow localhost connections unless specified
 		if not server_config.allow_localhost and is_ip_local(self.ip_address):
+			# Log connection failure due to localhost check
+			if server_config.is_verbose:
+				print("[SOCKS5] Client "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.ip_address+":"+str(self.requested_port)+" failed due to local domain disallowance.")
+
 			client_socket.close()
 			return
 
@@ -357,6 +457,10 @@ class Socks5Connection():
 
 		# Send success response and start relaying the connection
 		client_socket.send(b"\x05\x00\x00\x01" + self.ip_bytes + self.requested_port_bytes)
+
+		# Log connection acceptance
+		if server_config.is_verbose:
+			print("[SOCKS5] Accepted "+client_address[0]+":"+str(client_address[1])+"'s request to "+self.__dict__.get("domain_name", self.ip_address)+":"+str(self.requested_port))
 
 		relay_connection(client_socket, server_socket)
 
@@ -373,12 +477,16 @@ class MultiProxyServer:
 		b"PATCH"
 	]
 
-	def __init__(self, allow_localhost, authentication_parameters=None):
+	def __init__(self, allow_localhost, is_verbose, authentication_parameters=None):
 		self.allow_localhost = allow_localhost
+		self.is_verbose = is_verbose
 		self.should_authenticate = authentication_parameters != (None, None)
 		self.authentication_parameters = authentication_parameters
 
 	def connection_thread(self, conn, addr):
+		if self.is_verbose:
+			print("[INFO] New connection from "+addr[0]+":"+str(addr[1]))
+
 		try:
 			# Get the first packet and analyze what type of proxy it is
 
@@ -387,19 +495,20 @@ class MultiProxyServer:
 			if firstPacket.split(b" ",1)[0] in self.http_methods_bytes:
 				# Handle HTTP
 
-				HTTPConnection(self, firstPacket, conn)
+				HTTPConnection(self, firstPacket, conn, addr)
 			elif firstPacket[0] == 0x04:
 				# Handle Socks4/4a
 
-				Socks4Connection(self, firstPacket, conn)
+				Socks4Connection(self, firstPacket, conn, addr)
 			elif firstPacket[0] == 0x05:
 				# Handle Socks5/5h
 
-				Socks5Connection(self, firstPacket, conn)
+				Socks5Connection(self, firstPacket, conn, addr)
 			else:
 				# We don't know the protocol used, raise an exception
 				raise Exception("No known protocol used.")
-		except:
+		except Exception as e:
+			print(e)
 			# Suppress errors
 			pass
 
@@ -451,7 +560,7 @@ def run():
 	threading.Thread(target=controlc_handler).start()
 
 	# Start the server
-	MultiProxyServer(args.allow_localhost, authentication_parameters=(args.user, args.password)).start(host, port)
+	MultiProxyServer(args.allow_localhost, args.verbose, authentication_parameters=(args.user, args.password)).start(host, port)
 
 if __name__ == '__main__':
 	run()
