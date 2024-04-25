@@ -13,7 +13,7 @@ pip install lostproxy
 ## Usage
 
 ```bash
-usage: lostproxy.py [-h] [-l LISTENER] [-u USER] [-p PASSWORD] [-a] [-v]
+usage: lostproxy [-h] [-l LISTENER] [-u USER] [-p PASSWORD] [-a] [-v]
 
 A multi functional proxy for HTTP, Socks4/4a and Socks5/5h all in one port.
 
